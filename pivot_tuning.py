@@ -40,7 +40,7 @@ class PivotTuning:
             real_image = torch.nn.functional.interpolate(real_image, size=256)
             lossl2 = self.l2_criterion(img_gen, real_image)
             p_loss = self.percept(img_gen, real_image).sum()
-            loss = p_loss + 0.1 * lossl2
+            loss = p_loss + 0.5 * lossl2
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()

@@ -39,29 +39,24 @@ def parse_args():
     return args
 
 
-
-
 if __name__ == '__main__':
     # Parse the arguments
     args = parse_args()
+    # use yaml file to save the arguments
     config = parse_args_from_yaml(args.config)
 
-    # 将配置转换为 argparse.Namespace 对象
     args = argparse.Namespace(**config)
-    import os
- 
-    # Define your dataset
+     
     dataset = ImagesDataset(args.data_dir, transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]))
 
-    # Create the DataLoader
     args.dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    # Create an instance of the the stage-1 (generator tuning)
+    # generator fine-tuning
     generator_tuning = GeneratorTuning(args)
     generator_tuning.run()
 
-    # Create an instance of the the stage-2 (adversarial optimization)
+    # anti-facial image optimization
     divtrackee = DivTrackee(args)
     divtrackee.run()

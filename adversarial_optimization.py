@@ -1,22 +1,18 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
-from PIL import Image
+
 import matplotlib.pyplot as plt
 from utils import *
 from models.stylegan2.model import Generator
-import os
 from tqdm import tqdm
-import math
+
 import matplotlib.pyplot as plt
-import cv2
-import torch
-import clip
 from PIL import Image
 from models import irse, ir152, facenet
-import torch.nn.functional as F
+
 import numpy as np
 import glob
-import random
 import torchvision
 from utils.divtrackee_utils import *
 
@@ -35,21 +31,33 @@ class FaceRecognitionModels:
 
     def load_facenet(self):
         fr_model_facenet = facenet.InceptionResnetV1(num_classes=8631, device=self.device)
-        fr_model_facenet.load_state_dict(torch.load('./models/facenet.pth'))
+        try:
+            fr_model_facenet.load_state_dict(torch.load('./models/facenet.pth'))
+        except Exception as e:
+            print(f"[Error] Failed to load facenet model: {e}")
+            raise
         fr_model_facenet.to(self.device)
         fr_model_facenet.eval()
         return fr_model_facenet
 
     def load_ir152(self):
         fr_model_152 = ir152.IR_152((112, 112))
-        fr_model_152.load_state_dict(torch.load('./models/ir152.pth'))
+        try:
+            fr_model_152.load_state_dict(torch.load('./models/ir152.pth'))
+        except Exception as e:
+            print(f"[Error] Failed to load ir152 model: {e}")
+            raise
         fr_model_152.to(self.device)
         fr_model_152.eval()
         return fr_model_152
 
     def load_irse50(self):
         fr_model_50 = irse.Backbone(50, 0.6, 'ir_se')
-        fr_model_50.load_state_dict(torch.load('./models/irse50.pth'))
+        try:
+            fr_model_50.load_state_dict(torch.load('./models/irse50.pth'))
+        except Exception as e:
+            print(f"[Error] Failed to load irse50 model: {e}")
+            raise
         fr_model_50.to(self.device)
         fr_model_50.eval()
         return fr_model_50
@@ -62,12 +70,12 @@ class DivTrackee:
         self.source_text = args.source_text
         self.description = args.makeup_prompt
         self.face_models = FaceRecognitionModels()
-        self.fr_model_facenet = self.face_models.load_facenet()  
-        self.fr_model_152 = self.face_models.load_ir152()
-        self.fr_model_50 = self.face_models.load_irse50()
+        self.fr_model_facenet = self.face_models.fr_model_facenet  
+        self.fr_model_152 = self.face_models.fr_model_152
+        self.fr_model_50 = self.face_models.fr_model_50
         
         self.steps = args.steps
-        self.path = sorted(glob.glob(args.data_dir+'/*.jpg'))
+        self.path = sorted(glob.glob(args.data_dir+'/*.png'))
         self.generators = sorted(glob.glob(args.checkpoint_dir+'/*.pt'))
         self.latents = torch.load(args.latent_path).unsqueeze(1)
         self.noi = torch.load(args.noise_path)
@@ -81,15 +89,6 @@ class DivTrackee:
         self.embedding_queue = EmbeddingQueue() 
         self.queue_hyp = args.lambda_queue
         self.output_dir = args.output_dir
-        
-
-    def get_target_embeddings(self):
-        target = get_target()
-        with torch.no_grad():
-            target_embbeding_facenet = self.fr_model_facenet((F.interpolate(target, size=(160,160), mode='bilinear')))
-            target_embbeding_152 = self.fr_model_152((F.interpolate(target, size=(112,112), mode='bilinear')))
-            target_embbeding_50 = self.fr_model_50((F.interpolate(target, size=(112,112), mode='bilinear'))) 
-        return target_embbeding_facenet, target_embbeding_152, target_embbeding_50
     
 
     def process_latent(self, latent, noi):
@@ -107,12 +106,31 @@ class DivTrackee:
             noisss.append(nois)
         return latent, latent_cl, noisss
     
-
+    def normalize_and_interpolate(self, img, size):
+        if img.dim() == 3:
+            img = img.unsqueeze(0)
+        return F.interpolate((img - 0.5) * 2, size=size, mode='bilinear').cuda()
+    
+    #calculate target img embeddings
+    def get_target_embeddings(self):
+        target = get_target()
+        with torch.no_grad():
+            target_embbeding_facenet = self.fr_model_facenet(self.normalize_and_interpolate(target, size=(160, 160)))
+            target_embbeding_152 = self.fr_model_152(self.normalize_and_interpolate(target, size=(112, 112)))
+            target_embbeding_50 = self.fr_model_50(self.normalize_and_interpolate(target, size=(112, 112)))
+        return target_embbeding_facenet, target_embbeding_152, target_embbeding_50
+    
+    #calculate source img embeddings
     def get_source_embedding(self, path):
-        bb_src1 = alignment(Image.open(path))
-        img_src1 = self.trans(Image.open(path)).unsqueeze(0)[:,:,round(bb_src1[1])-self.margin:round(bb_src1[3])+self.margin,round(bb_src1[0])-self.margin:round(bb_src1[2])+self.margin]
-        norm_source_src1 = (F.interpolate((img_src1-0.5)*2, size=(112,112), mode='bilinear')).cuda()
-        norm_source_facenet_src1 = (F.interpolate((img_src1-0.5)*2, size=(160,160), mode='bilinear')).cuda()
+        try:
+            img = Image.open(path)
+        except Exception as e:
+            print(f"[Error] Failed to open image {path}: {e}")
+            return None, None, None, None
+        bb_src1 = alignment(img)
+        img_src1 = self.trans(img).unsqueeze(0)[:,:,round(bb_src1[1])-self.margin:round(bb_src1[3])+self.margin,round(bb_src1[0])-self.margin:round(bb_src1[2])+self.margin]
+        norm_source_src1 = self.normalize_and_interpolate(img_src1, size=(112, 112))
+        norm_source_facenet_src1 = self.normalize_and_interpolate(img_src1, size=(160, 160))
 
         with torch.no_grad():    
             source_embbeding_facenet_ = self.fr_model_facenet(norm_source_facenet_src1)
@@ -132,10 +150,10 @@ class DivTrackee:
 
         return img_org_
     
-
-    def get_adv_loss(self, img_gen, source_embbeding_m_, source_embbeding_facenet_, source_embbeding_152_, source_embbeding_50_,target_embbeding_m, target_embbeding_facenet, target_embbeding_152, target_embbeding_50):
-        norm_source = (F.interpolate((img_gen-0.5)*2, size=(112,112), mode='bilinear'))
-        norm_source_facenet = (F.interpolate((img_gen-0.5)*2, size=(160,160), mode='bilinear'))
+    #calculate latent code adversarial loss
+    def get_adv_loss(self, img_gen, source_embbeding_facenet_, source_embbeding_152_, source_embbeding_50_, target_embbeding_facenet, target_embbeding_152, target_embbeding_50):
+        norm_source = self.normalize_and_interpolate(img_gen, size=(112, 112))
+        norm_source_facenet = self.normalize_and_interpolate(img_gen, size=(160, 160))
 
         source_embbeding_facenet = self.fr_model_facenet(norm_source_facenet)
         source_embbeding_152 = self.fr_model_152(norm_source)
@@ -151,25 +169,27 @@ class DivTrackee:
         
         return adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50
     
-    
+    #calculate latent code total loss
     def calculate_loss(self, l2_loss, c_loss, adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50, queue_loss):
         dis_loss =  adv_loss_facenet_sim+adv_loss_152_sim+adv_loss_50_sim
         sim_loss =  adv_loss_facenet+adv_loss_152+adv_loss_50
-        adv_loss = sim_loss - dis_loss 
+        adv_loss = 0.6*sim_loss - dis_loss 
         loss =  self.lat_hyp * l2_loss+self.adv_hyp*adv_loss+self.c_hyp*c_loss + self.queue_hyp*queue_loss
         return loss
     
     
     def run(self):
         
-        for ff, (latent, path) in enumerate(zip(self.latents, self.path)):
+        for ff, (latent, path) in enumerate(tqdm(zip(self.latents, self.path), total=len(self.latents), desc="Optimizing")):
+            #load random target embeddings
             target_embbeding_facenet, target_embbeding_152, target_embbeding_50 = self.get_target_embeddings()
+            #load fine-tuned generator
             with torch.no_grad():
                 g_ema = torch.load(self.generators[ff]).eval() 
    
             _,latent_cl, noisss = self.process_latent(latent, self.noi[ff]) 
+            #load initial inversed image
             img_org_ = self.get_image_gen(latent, noisss,g_ema) 
-            
             
             optimizer = torch.optim.Adam([latent] + (noisss if self.noise_optimize else []), lr=0.01)
             
@@ -186,10 +206,10 @@ class DivTrackee:
                 c_loss = self.nce_loss(img_org_, self.source_text,img_gen_aug, self.description).sum()
 
                 l2_loss = ((latent_cl - latent) ** 2).sum()
- 
+                #crop and normalize the image
                 img_gen = img_gen_[:,:,round(bb_src1[1])-self.margin:round(bb_src1[3])+self.margin,round(bb_src1[0])-self.margin:round(bb_src1[2])+self.margin]
-                norm_source = (F.interpolate((img_gen-0.5)*2, size=(112,112), mode='bilinear'))
-                norm_source_facenet = (F.interpolate((img_gen-0.5)*2, size=(160,160), mode='bilinear'))
+                norm_source = self.normalize_and_interpolate(img_gen, size=(112, 112))
+                norm_source_facenet = self.normalize_and_interpolate(img_gen, size=(160, 160))
 
                 source_embbeding_facenet = self.fr_model_facenet(norm_source_facenet)
                 source_embbeding_152 = self.fr_model_152(norm_source)
@@ -200,17 +220,16 @@ class DivTrackee:
                     source_embbeding_152,
                     source_embbeding_50
                 )
-                adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50 = self.get_adv_loss(img_gen, source_embbeding_facenet_, source_embbeding_152_, source_embbeding_50_,target_embbeding_m, target_embbeding_facenet, target_embbeding_152, target_embbeding_50)
+                adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50 = self.get_adv_loss(img_gen, source_embbeding_facenet_, source_embbeding_152_, source_embbeding_50_, target_embbeding_facenet, target_embbeding_152, target_embbeding_50)
                                             
                 
-                loss = self.calculate_loss(self.model, l2_loss, c_loss, adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50, queue_loss)               
+                loss = self.calculate_loss(l2_loss, c_loss, adv_loss_facenet_sim, adv_loss_152_sim, adv_loss_50_sim, adv_loss_facenet, adv_loss_152, adv_loss_50, queue_loss)               
                 loss.backward()
                 
                 latent.grad[0][0:8] = torch.zeros(8,512) 
-          
 
                 optimizer.step()
-
+                #update queue
                 if (i+1) % self.steps == 0:
                     self.embedding_queue.enqueue(
                         source_embbeding_facenet,
