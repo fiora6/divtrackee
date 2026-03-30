@@ -27,7 +27,7 @@ pip install -r requirements.txt
 # Citation
 If the code and paper help your research, please kindly cite:
 ```
-@article{zhang2024explore,
+@article{fan2025divtrackee,
   title={DivTrackee versus DynTracker: Promoting Diversity in Anti-Facial Recognition against Dynamic FR Strategy},
   author={Fan, Wenshu and Zhang, Minxing and Li, Hongwei and Jiang, Wenbo and Chen, Hanxiao and Yue, Xiangyu and Backes, Michael and Zhang, Xiao},
   booktitle={Proceedings of the ACM SIGSAC Conference on Computer and Communications Security},
